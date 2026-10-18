@@ -1,0 +1,51 @@
+{
+  "name": "reelai-comment-assistant",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "AI-Powered Instagram Reels Comment Assistant with Google Gemini",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev:server": "node server/index.js",
+    "dev:client": "vite",
+    "build:client": "vite build",
+    "start": "concurrently -k \"npm run dev:server\" \"npm run dev:client\"",
+    "electron": "cross-env ELECTRON_START_URL=http://localhost:5173 electron electron/main.cjs",
+    "dev": "concurrently -k -p \"[{name}]\" -n \"SERVER,CLIENT\" -c \"cyan,magenta\" \"npm run dev:server\" \"npm run dev:client\"",
+    "app": "concurrently -k -p \"[{name}]\" -n \"SERVER,CLIENT,DESKTOP\" -c \"cyan,magenta,green\" \"npm run dev:server\" \"npm run dev:client\" \"wait-on http://localhost:5173 && npm run electron\""
+  },
+  "keywords": [
+    "instagram",
+    "reels",
+    "gemini",
+    "ai",
+    "electron",
+    "react",
+    "desktop"
+  ],
+  "author": "ReelAI",
+  "license": "MIT",
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "canvas-confetti": "^1.9.4",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.8",
+    "express": "^5.3.0",
+    "lucide-react": "^1.59.0",
+    "multer": "^2.4.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@tailwindcss/vite": "^4.3.3",
+    "@vitejs/plugin-react": "^6.1.2",
+    "autoprefixer": "^10.6.1",
+    "concurrently": "^10.0.6",
+    "cross-env": "^10.1.0",
+    "electron": "^44.9.0",
+    "postcss": "^8.5.30",
+    "tailwindcss": "^4.3.3",
+    "vite": "^8.3.4",
+    "wait-on": "^9.5.1"
+  }
+}
