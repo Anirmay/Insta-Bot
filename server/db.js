@@ -54,13 +54,8 @@ db.exec(`
     status TEXT DEFAULT 'pending',
     category TEXT,
     visual_summary TEXT,
-    main_subject TEXT,
-    actions TEXT,
     mood TEXT,
     language TEXT,
-    frames_count INTEGER DEFAULT 0,
-    thumbnail_path TEXT,
-    analysis_source TEXT DEFAULT 'none',
     error_message TEXT,
     processed_order INTEGER,
     created_at TEXT,
@@ -88,38 +83,6 @@ db.exec(`
     timestamp TEXT
   );
 `);
-
-// Safe column migrations for existing databases
-const reelColumns = db.prepare(`PRAGMA table_info(reels)`).all().map((c) => c.name);
-const columnsToAdd = [
-  { name: 'main_subject', type: 'TEXT' },
-  { name: 'actions', type: 'TEXT' },
-  { name: 'frames_count', type: 'INTEGER DEFAULT 0' },
-  { name: 'thumbnail_path', type: 'TEXT' },
-  { name: 'analysis_source', type: 'TEXT DEFAULT "none"' }
-];
-
-for (const col of columnsToAdd) {
-  if (!reelColumns.includes(col.name)) {
-    try {
-      db.exec(`ALTER TABLE reels ADD COLUMN ${col.name} ${col.type}`);
-    } catch (e) {
-      console.warn(`Migration notice for column ${col.name}:`, e.message);
-    }
-  }
-}
-
-// Clean up any reels falsely marked completed without real video files
-try {
-  db.prepare(`
-    UPDATE reels 
-    SET status = 'awaiting_video',
-        error_message = 'Direct video access restricted by Instagram. Please upload the Reel video file (MP4, MOV, or WEBM) for genuine visual analysis.'
-    WHERE status = 'completed' AND (video_path IS NULL OR frames_count = 0)
-  `).run();
-} catch (e) {
-  // Ignore
-}
 
 // Ensure default settings row
 const existingSettings = db.prepare('SELECT * FROM settings WHERE id = 1').get();

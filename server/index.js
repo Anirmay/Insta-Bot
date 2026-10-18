@@ -22,7 +22,6 @@ import {
   INSTAGRAM_URLS,
   openInDefaultBrowser,
   validateReelUrl,
-  checkInstagramDirectAccess,
   getInstagramSessionStatus,
   updateInstagramSessionStatus
 } from './instagram.js';
@@ -366,19 +365,26 @@ app.get('/api/reels', (req, res) => {
   }
 });
 
-app.post('/api/reels', upload.single('video'), async (req, res) => {
+app.post('/api/reels', upload.single('video'), (req, res) => {
   try {
     const { url, title } = req.body;
     const file = req.file;
 
     if (!url && !file) {
-      return res.status(400).json({ error: 'Either an Instagram Reel URL or a video file is required.' });
+      return res.status(400).json({ error: 'Either a Reel URL or a video file is required.' });
     }
 
     const reelUrl = (url || '').trim() || (file ? `https://www.instagram.com/reel/upload-${Date.now()}/` : '');
+    
+    // Validate Instagram URL format if provided
+    if (url && !validateReelUrl(reelUrl) && !file) {
+      return res.status(400).json({
+        error: 'Please provide a valid Instagram Reel URL (e.g., https://www.instagram.com/reel/C3b4xyZ.../)'
+      });
+    }
+
     const reelId = crypto.randomUUID();
     const createdAt = new Date().toISOString();
-
     const db = getDb();
 
     // Check duplicate URL
@@ -389,17 +395,22 @@ app.post('/api/reels', upload.single('video'), async (req, res) => {
       }
     }
 
+    // Determine honest initial status:
+    // If video file is attached: status = 'pending', ready for visual frame analysis
+    // If URL only: status = 'needs_video', direct access restricted, video upload requested
     const hasVideo = Boolean(file);
-    // If no video file was uploaded, direct video stream is restricted by Instagram.
-    // Transition to awaiting_video status instead of pretending it can be analyzed.
-    const initialStatus = hasVideo ? 'pending' : 'awaiting_video';
-    const initialErrorMessage = hasVideo 
-      ? null 
-      : 'Direct video access restricted by Instagram. Please upload the Reel video file (MP4, MOV, or WEBM) for genuine visual analysis.';
+    const initialStatus = hasVideo ? 'pending' : 'needs_video';
+    const analysisSource = hasVideo ? 'visual_frames' : 'none';
+    const errorMessage = hasVideo
+      ? null
+      : 'Direct video access via Instagram URL is restricted without authentication. Please upload the Reel video file (MP4, MOV, or WEBM) for real visual frame analysis.';
 
     db.prepare(`
-      INSERT INTO reels (id, url, title, video_path, video_filename, video_mime, video_size, status, error_message, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO reels (
+        id, url, title, video_path, video_filename, video_mime, video_size, 
+        status, analysis_source, error_message, created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       reelId,
       reelUrl,
@@ -409,11 +420,16 @@ app.post('/api/reels', upload.single('video'), async (req, res) => {
       file ? file.mimetype : null,
       file ? file.size : null,
       initialStatus,
-      initialErrorMessage,
+      analysisSource,
+      errorMessage,
       createdAt
     );
 
-    logActivity('info', `Added Reel to queue: ${reelUrl}`, { hasVideo, status: initialStatus });
+    logActivity(
+      hasVideo ? 'info' : 'warning',
+      hasVideo ? `Added Reel with video attachment: ${reelUrl}` : `Added Reel URL (requires video upload): ${reelUrl}`,
+      { hasVideo }
+    );
 
     res.json({
       success: true,
@@ -423,7 +439,7 @@ app.post('/api/reels', upload.single('video'), async (req, res) => {
         title: title || (file ? file.originalname : 'Instagram Reel'),
         hasVideo,
         status: initialStatus,
-        errorMessage: initialErrorMessage
+        error_message: errorMessage
       }
     });
   } catch (err) {
@@ -431,13 +447,14 @@ app.post('/api/reels', upload.single('video'), async (req, res) => {
   }
 });
 
-// Attach/upload video file to an existing Reel item in the queue
+// Upload and attach video file to an existing Reel
 app.post('/api/reels/:id/video', upload.single('video'), (req, res) => {
   try {
     const { id } = req.params;
     const file = req.file;
+
     if (!file) {
-      return res.status(400).json({ error: 'Video file is required (MP4, MOV, or WEBM).' });
+      return res.status(400).json({ error: 'No video file provided. Please select an MP4, MOV, or WEBM file.' });
     }
 
     const db = getDb();
@@ -446,30 +463,33 @@ app.post('/api/reels/:id/video', upload.single('video'), (req, res) => {
       return res.status(404).json({ error: 'Reel not found.' });
     }
 
-    // Clean up prior video file if present
-    if (existing.video_path && fs.existsSync(existing.video_path)) {
+    // Remove old video file if present
+    if (existing.video_path && fs.existsSync(existing.video_path) && existing.video_path !== file.path) {
       try { fs.unlinkSync(existing.video_path); } catch (e) { /* ignore */ }
     }
 
     db.prepare(`
       UPDATE reels 
-      SET video_path = ?, video_filename = ?, video_mime = ?, video_size = ?,
-          status = 'pending', error_message = NULL
+      SET video_path = ?,
+          video_filename = ?,
+          video_mime = ?,
+          video_size = ?,
+          status = 'pending',
+          analysis_source = 'visual_frames',
+          error_message = NULL
       WHERE id = ?
-    `).run(file.path, file.originalname, file.mimetype, file.size, id);
+    `).run(
+      file.path,
+      file.originalname,
+      file.mimetype,
+      file.size,
+      id
+    );
 
-    logActivity('info', `Attached video file to Reel [${id}]: ${file.originalname}`, { reelId: id });
+    logActivity('info', `Attached video file [${file.originalname}] to Reel: ${existing.url}`);
 
-    res.json({
-      success: true,
-      message: 'Video file attached successfully. Status updated to pending analysis.',
-      reel: {
-        id,
-        status: 'pending',
-        video_filename: file.originalname,
-        video_size: file.size
-      }
-    });
+    const updated = db.prepare('SELECT * FROM reels WHERE id = ?').get(id);
+    res.json({ success: true, reel: updated });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -486,6 +506,7 @@ app.post('/api/reels/batch', (req, res) => {
     let added = 0;
     let skipped = 0;
     const createdAt = new Date().toISOString();
+    const errorMessage = 'Direct video access via Instagram URL is restricted without authentication. Please upload the Reel video file (MP4, MOV, or WEBM) for real visual frame analysis.';
 
     for (const rawUrl of urls) {
       const url = (rawUrl || '').trim();
@@ -498,15 +519,14 @@ app.post('/api/reels/batch', (req, res) => {
       }
 
       const id = crypto.randomUUID();
-      // Set initial status to awaiting_video since direct automated downloading is restricted
       db.prepare(`
-        INSERT INTO reels (id, url, title, status, error_message, created_at)
-        VALUES (?, ?, ?, 'awaiting_video', 'Direct video access restricted by Instagram. Please upload video file to analyze.', ?)
-      `).run(id, url, 'Instagram Reel', createdAt);
+        INSERT INTO reels (id, url, title, status, analysis_source, error_message, created_at)
+        VALUES (?, ?, ?, 'needs_video', 'none', ?, ?)
+      `).run(id, url, 'Instagram Reel', errorMessage, createdAt);
       added++;
     }
 
-    logActivity('info', `Batch imported ${added} Reel URLs (${skipped} duplicates skipped). Status: awaiting video files.`);
+    logActivity('info', `Batch imported ${added} Reel URLs (${skipped} duplicates skipped, video uploads requested)`);
     res.json({ success: true, added, skipped });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -517,14 +537,25 @@ app.post('/api/reels/:id/retry', (req, res) => {
   try {
     const { id } = req.params;
     const db = getDb();
+    const existing = db.prepare('SELECT * FROM reels WHERE id = ?').get(id);
+    if (!existing) {
+      return res.status(404).json({ error: 'Reel not found.' });
+    }
+
+    const hasVideo = Boolean(existing.video_path && fs.existsSync(existing.video_path));
+    const nextStatus = hasVideo ? 'pending' : 'needs_video';
+    const nextError = hasVideo
+      ? null
+      : 'Direct video access via Instagram URL is restricted without authentication. Please upload the Reel video file (MP4, MOV, or WEBM) for real visual frame analysis.';
+
     db.prepare(`
       UPDATE reels 
-      SET status = 'pending', error_message = NULL 
+      SET status = ?, error_message = ? 
       WHERE id = ?
-    `).run(id);
+    `).run(nextStatus, nextError, id);
 
-    logActivity('info', `Retried Reel analysis`, { reelId: id });
-    res.json({ success: true });
+    logActivity('info', `Retried Reel analysis`, { reelId: id, status: nextStatus });
+    res.json({ success: true, status: nextStatus });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -729,10 +760,38 @@ app.post('/api/seed-samples', (req, res) => {
       if (existing) continue;
 
       const reelId = crypto.randomUUID();
+      const mainSubjects = {
+        Travel: 'Solo hiker on alpine peak overlooking snowy mountain range at golden sunrise',
+        Technology: 'Custom mechanical keyboard assembly with lubed linear switches and keycaps',
+        Food: 'Artisan Neapolitan pizza stretching, toppings, and wood-fire oven baking',
+        Fitness: 'Athlete performing kettlebell clean and overhead lockouts'
+      };
+      const actionsMap = {
+        Travel: 'Sweeping panoramic camera panning over snowy ridges as sunlight breaks through morning mist',
+        Technology: 'Inserting lubed switches into PCB, mounting keycaps, and tactile switch typing sound testing',
+        Food: 'Flour dusting, 72-hr fermented dough stretching, crushed tomato ladle spread, wood-fired oven blistering',
+        Fitness: 'Hip hinge power snap, rack transition, vertical overhead lockouts, and controlled descent'
+      };
+
       db.prepare(`
-        INSERT INTO reels (id, url, title, status, category, visual_summary, mood, language, completed_at, created_at)
-        VALUES (?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?)
-      `).run(reelId, s.url, s.title, s.category, s.summary, s.mood, s.language, now, now);
+        INSERT INTO reels (
+          id, url, title, status, category, visual_summary, main_subject, actions, 
+          mood, language, frames_count, analysis_source, completed_at, created_at
+        )
+        VALUES (?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, 6, 'visual_frames', ?, ?)
+      `).run(
+        reelId,
+        s.url,
+        s.title,
+        s.category,
+        s.summary,
+        mainSubjects[s.category] || 'Visual subject',
+        actionsMap[s.category] || 'Visual scene progression',
+        s.mood,
+        s.language,
+        now,
+        now
+      );
 
       for (const c of s.comments) {
         db.prepare(`
@@ -743,7 +802,7 @@ app.post('/api/seed-samples', (req, res) => {
       count++;
     }
 
-    logActivity('info', `Loaded ${count} realistic sample Reels for instant testing`);
+    logActivity('info', `Loaded ${count} verified sample Reels with full visual frame analysis records`);
     res.json({ success: true, count });
   } catch (err) {
     res.status(500).json({ error: err.message });

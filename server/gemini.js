@@ -151,49 +151,42 @@ export async function testApiKey(apiKey, modelId = DEFAULT_MODEL_ID) {
 }
 
 /**
- * Genuine Multimodal Video Analysis and Grounded Comment Generation.
- * Requires actual video frames extracted via FFmpeg sampled throughout the video.
+ * Analyzes genuine extracted video frames and generates grounded comments.
+ * Passes actual image frames (inlineData JPEG) to Gemini multimodal model.
  */
-export async function analyzeReelAndGenerateComments({
+export async function analyzeVideoFramesAndGenerateComments({
   apiKey,
   modelId = DEFAULT_MODEL_ID,
-  reelUrl = '',
   frames = [],
+  reelUrl = '',
   title = '',
+  durationSeconds = 0,
   previousComments = []
 }) {
   if (!apiKey) {
     throw new InvalidApiKeyError('No active Gemini API key configured.');
   }
 
-  // CRITICAL INTEGRITY CHECK: Never claim to analyze without visual frames
-  if (!frames || !Array.isArray(frames) || frames.length === 0) {
-    throw new Error(
-      'Genuine video analysis requires actual visual content. No video frames were provided. Please upload the Reel video file (MP4, MOV, or WEBM).'
-    );
+  if (!Array.isArray(frames) || frames.length === 0) {
+    throw new Error('No extracted video frames provided for visual analysis. Visual frames are required.');
   }
 
   const genAI = new GoogleGenerativeAI(apiKey.trim());
   const model = genAI.getGenerativeModel({
     model: modelId,
     generationConfig: {
-      temperature: 0.6,
-      topP: 0.95,
+      temperature: 0.4, // Low temperature for high factual grounding
+      topP: 0.9,
       responseMimeType: 'application/json'
     }
   });
 
   const parts = [];
 
-  // 1. Add introductory instruction explaining frame chronology
-  parts.push({
-    text: `You are ReelAI, an expert Instagram Reels visual analyst. You have been provided with ${frames.length} ACTUAL EXTRACTED VIDEO FRAMES from this Instagram Reel, sampled in sequence across its beginning, middle, and end.`
-  });
-
-  // 2. Add each extracted frame image with its timestamp and position label
+  // 1. Add each extracted frame as a multimodal visual part with temporal labels
   for (const frame of frames) {
     parts.push({
-      text: `[Frame ${frame.index} - ${frame.positionLabel || `Timestamp ${frame.timestampSec}s`}]`
+      text: `[Frame ${frame.index} of ${frames.length} | Timestamp: ${frame.timeFormatted} (${frame.timeSeconds.toFixed(1)}s) | Position: ${frame.position}]`
     });
     parts.push({
       inlineData: {
@@ -203,57 +196,57 @@ export async function analyzeReelAndGenerateComments({
     });
   }
 
-  // 3. Add prompt constraints and required JSON schema
   const previousCommentsContext = previousComments.length > 0
-    ? `\nTo avoid repetition across your session, DO NOT generate comments that duplicate these recent comments:\n- ${previousComments.slice(-10).join('\n- ')}`
+    ? `\nTo avoid repetition across reels, DO NOT generate any comments similar to these recently generated ones:\n- ${previousComments.slice(-10).join('\n- ')}`
     : '';
 
-  const promptText = `
-VIDEO METADATA:
-- Reel URL: ${reelUrl || 'Attached video file'}
-- Provided Title/Context: ${title || 'N/A'}
-- Total Frames Analyzed: ${frames.length}
+  // 2. Add system prompt with strict visual grounding instructions
+  const systemPrompt = `
+You are ReelAI, an expert visual analyst for Instagram Reels video content.
+You have been provided with ${frames.length} sequential representative frames extracted directly from the actual video at key moments (beginning, middle, and end) over a duration of approximately ${Math.round(durationSeconds)} seconds.
+
+Reel URL: ${reelUrl || 'N/A'}
+User-provided Title/Topic: ${title || 'N/A'}
 ${previousCommentsContext}
 
-INSTRUCTIONS FOR GENUINE VISUAL ANALYSIS:
-1. Ground your entire analysis STRICTLY on what is visible in the provided frame images.
-2. Identify what actually happens in the video, who or what the main subject is, and what observable actions take place across the sequence of frames.
-3. If the frames are blurry, ambiguous, or insufficient to understand the video, state this honestly in "videoSummary" instead of inventing details.
-4. DO NOT invent locations, people, equipment, activities, or events that are not visible in the frames.
+CRITICAL RULES FOR FACTUAL VISUAL GROUNDING:
+1. STRICT VISUAL GROUNDING: Ground your entire summary, subject, and actions EXCLUSIVELY on visual evidence visible in the provided frames.
+2. NO INVENTED DETAILS: Do NOT invent, assume, or speculate on locations, dialogue, people, brands, or events that are not visibly confirmed in the frames.
+3. VISUAL ACTIONS: Describe the observable motions, subject actions, visual changes, techniques, or scene progression from Frame 1 through Frame ${frames.length}.
+4. SUFFICIENCY CHECK: If the frames are blurry, completely dark, or insufficient to understand the video, clearly note that in "videoSummary" and indicate what is visible.
+5. COMMENT GROUNDING: Each of the 3 comments must directly reference specific visible elements from the video (e.g., specific objects, action timing, visual style, technique, setting).
+6. NATURAL HUMAN TONE: Comments must sound like a real person watching this Reel (1-2 sentences max, authentic, conversational, thoughtful).
+7. NO GENERIC PRAISE: NEVER output generic filler like "Nice video", "Great post", "Love this!", "Awesome", or "So cool!".
+8. NO HASHTAGS: Do not include hashtags.
+9. EMOJI LIMIT: Maximum 1 natural emoji per comment, or none at all.
 
-INSTRUCTIONS FOR 3 GROUNDED COMMENTS:
-1. Generate EXACTLY 3 natural, human-sounding comment suggestions.
-2. Each comment MUST directly reference specific visual elements, observable actions, or techniques visible in the video frames.
-3. Short and authentic: 1 to 2 sentences maximum. Sounds like a real human viewer on Instagram.
-4. NO GENERIC PRAISE: Never write generic filler like "Nice video", "Great post", "Love this!", "Awesome", or "So cool!".
-5. Natural tone: Maximum 1 emoji per comment, or none at all. No hashtags. No fake claims ("I was there yesterday!").
-
-OUTPUT FORMAT (Respond with a valid JSON object matching this exact schema):
+OUTPUT FORMAT:
+Return a JSON object with this exact structure:
 {
-  "videoSummary": "Detailed 1-2 sentence description of what actually happens in the video based on the frames",
-  "mainSubject": "The main person, animal, object, or activity visible in the video",
-  "actions": "Specific observable actions and events across the frames",
-  "category": "Comedy" | "Education" | "Travel" | "Fitness" | "Food" | "Technology" | "Fashion" | "Lifestyle" | "Art" | "Music" | "Other",
-  "mood": "Apparent tone (e.g., Energetic, Serene, Informative, Humorous, Intense, Creative)",
-  "language": "Detected language if visible in on-screen text/signs, otherwise 'English'",
+  "videoSummary": "Accurate 2-3 sentence description of what actually happens in the video based on the frames",
+  "mainSubject": "The main person, object, animal, or visual subject visible in the frames",
+  "actions": "Specific observable actions or events occurring across the sampled frames",
+  "category": "Comedy" | "Education" | "Travel" | "Fitness" | "Food" | "Technology" | "Fashion" | "Art" | "Lifestyle" | "Other",
+  "mood": "e.g., Energetic, Peaceful, Informative, Humorous, Focused, Motivational",
+  "language": "Identified on-screen language, or 'Not visible / Instrumental'",
   "comments": [
     {
-      "text": "First grounded comment directly referencing specific visible actions or details",
+      "text": "First comment grounded in observed visual content (1-2 sentences)",
       "tone": "Observant"
     },
     {
-      "text": "Second grounded comment offering an engaging observation or thoughtful reaction",
-      "tone": "Insightful"
+      "text": "Second comment grounded in observed visual content (1-2 sentences)",
+      "tone": "Engaging"
     },
     {
-      "text": "Third grounded comment with an authentic, casual human perspective",
-      "tone": "Engaging"
+      "text": "Third comment grounded in observed visual content (1-2 sentences)",
+      "tone": "Appreciative"
     }
   ]
 }
 `;
 
-  parts.push({ text: promptText });
+  parts.push({ text: systemPrompt });
 
   try {
     const result = await model.generateContent(parts);
@@ -261,7 +254,7 @@ OUTPUT FORMAT (Respond with a valid JSON object matching this exact schema):
     const responseText = response.text()?.trim();
 
     if (!responseText) {
-      throw new Error('Gemini returned an empty response during visual frame analysis.');
+      throw new Error('Gemini returned an empty response.');
     }
 
     // Clean JSON formatting if wrapped in markdown code blocks
@@ -272,27 +265,19 @@ OUTPUT FORMAT (Respond with a valid JSON object matching this exact schema):
 
     const parsed = JSON.parse(cleanedJson);
 
-    // Validate structured fields
+    // Validate expected structure
     if (!parsed.comments || !Array.isArray(parsed.comments) || parsed.comments.length === 0) {
       throw new Error('Gemini response missing comments array.');
     }
 
-    const category = parsed.category || 'Lifestyle';
-    const videoSummary = parsed.videoSummary || parsed.summary || 'Visual content analyzed successfully.';
-    const mainSubject = parsed.mainSubject || 'Subject visible in video';
-    const actions = parsed.actions || 'Actions observed across frames';
-    const mood = parsed.mood || 'Natural';
-    const language = parsed.language || 'English';
-
     return {
-      category,
-      videoSummary,
-      mainSubject,
-      actions,
-      mood,
-      language,
-      framesCount: frames.length,
-      hasVisualVideo: true,
+      videoSummary: parsed.videoSummary || 'Visual content analyzed successfully from frames.',
+      mainSubject: parsed.mainSubject || 'Visual subject in video',
+      actions: parsed.actions || 'Observable visual progression across frames',
+      category: parsed.category || 'Lifestyle',
+      mood: parsed.mood || 'Natural',
+      language: parsed.language || 'English',
+      framesAnalyzed: frames.length,
       comments: parsed.comments.slice(0, 3).map((c, idx) => ({
         text: typeof c === 'string' ? c : c.text,
         tone: typeof c === 'object' && c.tone ? c.tone : `Option ${idx + 1}`
@@ -307,7 +292,7 @@ export default {
   SUPPORTED_MODELS,
   DEFAULT_MODEL_ID,
   testApiKey,
-  analyzeReelAndGenerateComments,
+  analyzeVideoFramesAndGenerateComments,
   classifyGeminiError,
   sanitizeErrorMessage,
   QuotaExceededError,

@@ -191,8 +191,8 @@ export default function ReviewCommentsView({
                         </span>
                       )}
                       {reel.frames_count > 0 && (
-                        <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-purple-500/20 text-purple-300 border border-purple-500/30 flex items-center gap-1">
-                          <Sparkles className="w-2.5 h-2.5" /> {reel.frames_count} Frames Analyzed
+                        <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 flex items-center gap-1">
+                          <FileVideo className="w-2.5 h-2.5" /> {reel.frames_count} Visual Frames Analyzed
                         </span>
                       )}
                     </div>
@@ -206,21 +206,21 @@ export default function ReviewCommentsView({
                     </div>
 
                     {reel.visual_summary && (
-                      <div className="text-xs text-slate-300 bg-slate-950/50 p-3 rounded-2xl border border-slate-800/80 mt-2 space-y-1.5 leading-relaxed">
+                      <div className="bg-slate-950/60 p-3.5 rounded-2xl border border-slate-800/80 mt-2.5 space-y-1.5 text-xs text-slate-300">
                         <div>
-                          <span className="font-semibold text-purple-300">Visual Summary: </span>
-                          <span className="text-slate-200">{reel.visual_summary}</span>
+                          <span className="font-semibold text-purple-300">Visual Evidence Summary:</span>{' '}
+                          <span className="leading-relaxed">{reel.visual_summary}</span>
                         </div>
                         {reel.main_subject && (
-                          <div className="text-[11px] text-slate-400">
-                            <span className="font-semibold text-slate-300">Main Subject: </span>
-                            {reel.main_subject}
+                          <div>
+                            <span className="font-semibold text-sky-300">Main Subject:</span>{' '}
+                            <span>{reel.main_subject}</span>
                           </div>
                         )}
                         {reel.actions && (
-                          <div className="text-[11px] text-slate-400">
-                            <span className="font-semibold text-slate-300">Observable Actions: </span>
-                            {reel.actions}
+                          <div>
+                            <span className="font-semibold text-emerald-300">Observable Actions:</span>{' '}
+                            <span>{reel.actions}</span>
                           </div>
                         )}
                       </div>
