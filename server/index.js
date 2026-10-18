@@ -809,10 +809,35 @@ app.post('/api/seed-samples', (req, res) => {
   }
 });
 
-// Start server on all interfaces (IPv4 and IPv6)
-app.listen(PORT, '0.0.0.0', () => {
+// Start server on all interfaces (IPv4 and IPv6) with robust error and signal handling
+const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`[ReelAI Server] Running on http://localhost:${PORT} and http://127.0.0.1:${PORT}`);
   logActivity('info', `ReelAI Assistant server started on port ${PORT}`);
 });
 
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`[ReelAI Server Error] Port ${PORT} is already in use by another process.`);
+    console.error(`[ReelAI Server Error] Please stop any existing instance running on port ${PORT} before restarting.`);
+  } else {
+    console.error(`[ReelAI Server Error] Server failed to start:`, err);
+  }
+  process.exit(1);
+});
+
+// Graceful shutdown handlers
+const handleShutdown = (signal) => {
+  console.log(`[ReelAI Server] Received ${signal}. Shutting down server...`);
+  server.close(() => {
+    console.log('[ReelAI Server] HTTP server closed cleanly.');
+    process.exit(0);
+  });
+  // Force exit if graceful close hangs
+  setTimeout(() => process.exit(0), 3000).unref();
+};
+
+process.on('SIGINT', () => handleShutdown('SIGINT'));
+process.on('SIGTERM', () => handleShutdown('SIGTERM'));
+
+export { server };
 export default app;

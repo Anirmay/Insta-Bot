@@ -19,7 +19,14 @@ function createWindow() {
   });
 
   const startUrl = process.env.ELECTRON_START_URL || 'http://localhost:5173';
-  mainWindow.loadURL(startUrl);
+  mainWindow.loadURL(startUrl).catch((err) => {
+    console.warn('[Electron] Initial page load pending dev server, retrying in 1s...', err.message);
+    setTimeout(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.loadURL(startUrl).catch(e => console.error('[Electron] Page load error:', e.message));
+      }
+    }, 1000);
+  });
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);

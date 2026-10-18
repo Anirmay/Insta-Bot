@@ -6,12 +6,12 @@
   "main": "electron/main.cjs",
   "scripts": {
     "dev:server": "node server/index.js",
-    "dev:client": "vite",
+    "dev:client": "vite --port 5173 --strictPort",
     "build:client": "vite build",
-    "start": "concurrently -k \"npm run dev:server\" \"npm run dev:client\"",
+    "start": "concurrently --kill-others-on-fail -n \"SERVER,CLIENT\" -c \"cyan,magenta\" \"npm run dev:server\" \"npm run dev:client\"",
     "electron": "cross-env ELECTRON_START_URL=http://localhost:5173 electron electron/main.cjs",
-    "dev": "concurrently -k -p \"[{name}]\" -n \"SERVER,CLIENT\" -c \"cyan,magenta\" \"npm run dev:server\" \"npm run dev:client\"",
-    "app": "concurrently -k -p \"[{name}]\" -n \"SERVER,CLIENT,DESKTOP\" -c \"cyan,magenta,green\" \"npm run dev:server\" \"npm run dev:client\" \"wait-on http://localhost:5173 && npm run electron\""
+    "dev": "concurrently --kill-others-on-fail -p \"[{name}]\" -n \"SERVER,CLIENT\" -c \"cyan,magenta\" \"npm run dev:server\" \"npm run dev:client\"",
+    "app": "concurrently -k -p \"[{name}]\" -n \"SERVER,CLIENT,DESKTOP\" -c \"cyan,magenta,green\" \"npm run dev:server\" \"npm run dev:client\" \"wait-on -t 30000 http-get://127.0.0.1:5173 && npm run electron\""
   },
   "keywords": [
     "instagram",
