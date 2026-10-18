@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import { getDb, logActivity } from './db.js';
 import { decryptSecret } from './credentials.js';
 import {
@@ -10,6 +11,7 @@ import {
   UnsupportedMethodError,
   NetworkConnectionError
 } from './gemini.js';
+import { extractVideoFrames, cleanupFrames } from './video.js';
 
 class ReelProcessingEngine {
   constructor() {
@@ -26,15 +28,16 @@ class ReelProcessingEngine {
   getSnapshot() {
     const db = getDb();
     const settings = db.prepare('SELECT * FROM settings WHERE id = 1').get() || {};
-    
+
     // Aggregate counts from SQLite
     const totalProcessed = db.prepare(`SELECT COUNT(*) as count FROM reels WHERE status = 'completed'`).get().count;
-    const totalVideosAnalyzed = db.prepare(`SELECT COUNT(*) as count FROM reels WHERE status = 'completed' AND video_path IS NOT NULL`).get().count;
+    const totalVideosAnalyzed = db.prepare(`SELECT COUNT(*) as count FROM reels WHERE status = 'completed' AND frames_count > 0`).get().count;
     const totalCommentsGenerated = db.prepare(`SELECT COUNT(*) as count FROM comments`).get().count;
     const totalCommentsApproved = db.prepare(`SELECT COUNT(*) as count FROM comments WHERE is_approved = 1`).get().count;
     const totalCommentsPosted = db.prepare(`SELECT COUNT(*) as count FROM comments WHERE is_posted = 1`).get().count;
     const totalQueueLength = db.prepare(`SELECT COUNT(*) as count FROM reels`).get().count;
     const pendingCount = db.prepare(`SELECT COUNT(*) as count FROM reels WHERE status = 'pending'`).get().count;
+    const awaitingVideoCount = db.prepare(`SELECT COUNT(*) as count FROM reels WHERE status = 'awaiting_video'`).get().count;
 
     return {
       status: this.status,
@@ -52,7 +55,8 @@ class ReelProcessingEngine {
         totalCommentsApproved,
         totalCommentsPosted,
         totalQueueLength,
-        pendingCount
+        pendingCount,
+        awaitingVideoCount
       }
     };
   }
@@ -155,13 +159,13 @@ class ReelProcessingEngine {
 
       if (completedCount >= targetCount) {
         this.status = 'completed';
-        this.currentStep = `Target reached (${completedCount}/${targetCount} Reels processed)`;
+        this.currentStep = `Target reached (${completedCount}/${targetCount} Reels analyzed)`;
         this.updateDbStatus();
         logActivity('success', `Completed target of ${targetCount} Reels!`);
         break;
       }
 
-      // 2. Fetch next pending Reel
+      // 2. Fetch next pending Reel (only reels that have a video file ready for analysis)
       const nextReel = db.prepare(`
         SELECT * FROM reels 
         WHERE status = 'pending' 
@@ -170,12 +174,17 @@ class ReelProcessingEngine {
       `).get();
 
       if (!nextReel) {
+        // Check if there are reels awaiting video upload
+        const awaitingCount = db.prepare(`SELECT COUNT(*) as count FROM reels WHERE status = 'awaiting_video'`).get().count;
         this.status = 'idle';
-        this.currentStep = 'All queued Reels processed. Add more Reels to continue.';
+        if (awaitingCount > 0) {
+          this.currentStep = `Queue idle. ${awaitingCount} Reel(s) awaiting video upload (MP4/MOV/WEBM) before analysis can begin.`;
+        } else {
+          this.currentStep = 'All queued Reels processed. Add more Reels to continue.';
+        }
         this.currentReelUrl = '';
         this.currentReelId = null;
         this.updateDbStatus();
-        logActivity('info', 'Queue empty. All pending Reels processed.');
         break;
       }
 
@@ -212,31 +221,45 @@ class ReelProcessingEngine {
       this.currentReelUrl = nextReel.url;
 
       try {
-        // Step 1: Reading Reel URL
-        this.currentStep = `Reading Reel URL (${nextReel.url})`;
+        // INTEGRITY RULE: Check whether video content was actually provided
+        if (!nextReel.video_path || !fs.existsSync(nextReel.video_path)) {
+          // Do NOT fake analysis or speculate comments
+          db.prepare(`
+            UPDATE reels 
+            SET status = 'awaiting_video', 
+                error_message = 'Direct video access restricted by Instagram. Please upload the Reel video file (MP4, MOV, or WEBM) for genuine visual analysis.'
+            WHERE id = ?
+          `).run(nextReel.id);
+
+          logActivity('warning', 'Reel requires video file upload before visual analysis can proceed', {
+            url: nextReel.url
+          });
+
+          this.currentStep = `Reel awaiting video upload: ${nextReel.url}`;
+          this.updateDbStatus();
+          await new Promise((r) => setTimeout(r, 600));
+          continue;
+        }
+
+        // Step 1: Mark analyzing & extract frames with FFmpeg
+        this.currentStep = `Extracting representative video frames (FFmpeg)...`;
         this.updateDbStatus();
-        await new Promise((r) => setTimeout(r, 600));
-
-        if (this.isPaused || this.isStopped) break;
-
-        // Step 2: Inspecting video content
-        const hasVideoFile = Boolean(nextReel.video_path);
-        this.currentStep = hasVideoFile 
-          ? `Loading video content: ${nextReel.video_filename || 'video file'}`
-          : 'Inspecting Reel URL & metadata (No direct video upload attached)';
-        this.updateDbStatus();
-        await new Promise((r) => setTimeout(r, 600));
-
-        if (this.isPaused || this.isStopped) break;
-
-        // Step 3: Analyze with Gemini Multimodal AI
-        this.currentStep = `Analyzing content with Gemini AI (${settings.selected_model})...`;
-        this.updateDbStatus();
-
-        // Mark reel as analyzing in DB
         db.prepare(`UPDATE reels SET status = 'analyzing' WHERE id = ?`).run(nextReel.id);
 
-        // Fetch recent comments to ensure uniqueness
+        let extraction;
+        try {
+          extraction = await extractVideoFrames(nextReel.video_path, nextReel.id, { sampleCount: 5 });
+        } catch (extractErr) {
+          throw new Error(`FFmpeg Frame Extraction Failed: ${extractErr.message}`);
+        }
+
+        if (this.isPaused || this.isStopped) break;
+
+        // Step 2: Send extracted frames to Gemini Multimodal AI
+        this.currentStep = `Analyzing ${extraction.frameCount} video frames with Gemini (${settings.selected_model})...`;
+        this.updateDbStatus();
+
+        // Fetch recent comments to ensure variety
         const recentCommentsRows = db.prepare(`
           SELECT text FROM comments 
           ORDER BY rowid DESC 
@@ -244,21 +267,19 @@ class ReelProcessingEngine {
         `).all();
         const previousComments = recentCommentsRows.map((r) => r.text);
 
-        // Run Gemini analysis
         const analysisResult = await analyzeReelAndGenerateComments({
           apiKey: plainApiKey,
           modelId: settings.selected_model,
           reelUrl: nextReel.url,
-          videoPath: nextReel.video_path,
-          mimeType: nextReel.video_mime || 'video/mp4',
+          frames: extraction.frames,
           title: nextReel.title || '',
           previousComments
         });
 
         if (this.isPaused || this.isStopped) break;
 
-        // Step 4: Save analysis and comments to DB
-        this.currentStep = 'Saving AI comments and updating records...';
+        // Step 3: Save analysis results and grounded comments to DB
+        this.currentStep = `Saving visual analysis and 3 grounded comments...`;
         this.updateDbStatus();
 
         const completedAt = new Date().toISOString();
@@ -267,21 +288,30 @@ class ReelProcessingEngine {
           SET status = 'completed',
               category = ?,
               visual_summary = ?,
+              main_subject = ?,
+              actions = ?,
               mood = ?,
               language = ?,
+              frames_count = ?,
+              thumbnail_path = ?,
+              analysis_source = 'visual_frames',
               completed_at = ?,
               error_message = NULL
           WHERE id = ?
         `).run(
-          analysisResult.reelType,
-          analysisResult.summary,
+          analysisResult.category,
+          analysisResult.videoSummary,
+          analysisResult.mainSubject,
+          analysisResult.actions,
           analysisResult.mood,
           analysisResult.language,
+          extraction.frameCount,
+          extraction.thumbnailUrl,
           completedAt,
           nextReel.id
         );
 
-        // Insert generated comments
+        // Insert exactly 3 comments grounded in visual analysis
         for (const c of analysisResult.comments) {
           const commentId = crypto.randomUUID();
           db.prepare(`
@@ -290,29 +320,30 @@ class ReelProcessingEngine {
           `).run(commentId, nextReel.id, c.text, c.tone, completedAt);
         }
 
-        logActivity('success', `Generated 3 comments for Reel [${analysisResult.reelType}]`, {
+        // Clean up temporary frame files
+        cleanupFrames(nextReel.id);
+
+        logActivity('success', `Analyzed Reel [${analysisResult.category}] via ${extraction.frameCount} frames: ${analysisResult.videoSummary}`, {
           url: nextReel.url,
-          summary: analysisResult.summary
+          subject: analysisResult.mainSubject,
+          actions: analysisResult.actions
         });
 
-        // Step 5: Awaiting User Review
-        this.currentStep = `Analysis complete for ${nextReel.url}. Awaiting user review.`;
+        // Step 4: Awaiting User Review
+        this.currentStep = `Analysis complete for ${nextReel.title || nextReel.url} (${extraction.frameCount} frames). Awaiting user review.`;
         this.updateDbStatus();
 
-        // Respectful delay between Reels (2 seconds) to avoid spamming
-        await new Promise((r) => setTimeout(r, 2000));
+        await new Promise((r) => setTimeout(r, 1500));
 
       } catch (err) {
         console.error('Error processing Reel:', err);
 
         if (err instanceof QuotaExceededError) {
-          // Pause queue immediately & notify user
           this.status = 'paused';
           this.isPaused = true;
           this.lastError = err.message;
           this.currentStep = 'Paused: Gemini API quota exceeded. Please select another API key manually.';
           
-          // Mark this key as quota_exhausted
           db.prepare(`UPDATE api_keys SET status = 'quota_exhausted', error_message = ? WHERE id = ?`).run(
             err.message,
             activeKeyRow.id
@@ -367,21 +398,19 @@ class ReelProcessingEngine {
           break;
         }
 
-        // Generic error on this Reel (e.g., inaccessible video, bad format)
+        // Generic failure (e.g. invalid format or corrupt video)
         db.prepare(`UPDATE reels SET status = 'error', error_message = ? WHERE id = ?`).run(
           err.message || 'Unknown processing error',
           nextReel.id
         );
         logActivity('error', `Failed to analyze Reel: ${err.message}`, { url: nextReel.url });
 
-        // Continue to next after brief pause
         await new Promise((r) => setTimeout(r, 1500));
       }
     }
 
     if (this.status === 'running') {
       this.status = 'idle';
-      this.currentStep = 'Ready';
       this.updateDbStatus();
     }
   }

@@ -1,5 +1,4 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import fs from 'node:fs';
 
 export class QuotaExceededError extends Error {
   constructor(message, details = null) {
@@ -152,14 +151,14 @@ export async function testApiKey(apiKey, modelId = DEFAULT_MODEL_ID) {
 }
 
 /**
- * Analyzes Reel video content and generates 3 human-like comments.
+ * Genuine Multimodal Video Analysis and Grounded Comment Generation.
+ * Requires actual video frames extracted via FFmpeg sampled throughout the video.
  */
 export async function analyzeReelAndGenerateComments({
   apiKey,
   modelId = DEFAULT_MODEL_ID,
-  reelUrl,
-  videoPath = null,
-  mimeType = 'video/mp4',
+  reelUrl = '',
+  frames = [],
   title = '',
   previousComments = []
 }) {
@@ -167,11 +166,18 @@ export async function analyzeReelAndGenerateComments({
     throw new InvalidApiKeyError('No active Gemini API key configured.');
   }
 
+  // CRITICAL INTEGRITY CHECK: Never claim to analyze without visual frames
+  if (!frames || !Array.isArray(frames) || frames.length === 0) {
+    throw new Error(
+      'Genuine video analysis requires actual visual content. No video frames were provided. Please upload the Reel video file (MP4, MOV, or WEBM).'
+    );
+  }
+
   const genAI = new GoogleGenerativeAI(apiKey.trim());
   const model = genAI.getGenerativeModel({
     model: modelId,
     generationConfig: {
-      temperature: 0.7,
+      temperature: 0.6,
       topP: 0.95,
       responseMimeType: 'application/json'
     }
@@ -179,78 +185,75 @@ export async function analyzeReelAndGenerateComments({
 
   const parts = [];
 
-  // If local video content is provided, pass it to Gemini
-  let hasVisualVideo = false;
-  if (videoPath && fs.existsSync(videoPath)) {
-    try {
-      const stats = fs.statSync(videoPath);
-      // Gemini inlineData supports up to ~25MB comfortably
-      if (stats.size > 0 && stats.size <= 25 * 1024 * 1024) {
-        const fileBuffer = fs.readFileSync(videoPath);
-        parts.push({
-          inlineData: {
-            mimeType: mimeType || 'video/mp4',
-            data: fileBuffer.toString('base64')
-          }
-        });
-        hasVisualVideo = true;
+  // 1. Add introductory instruction explaining frame chronology
+  parts.push({
+    text: `You are ReelAI, an expert Instagram Reels visual analyst. You have been provided with ${frames.length} ACTUAL EXTRACTED VIDEO FRAMES from this Instagram Reel, sampled in sequence across its beginning, middle, and end.`
+  });
+
+  // 2. Add each extracted frame image with its timestamp and position label
+  for (const frame of frames) {
+    parts.push({
+      text: `[Frame ${frame.index} - ${frame.positionLabel || `Timestamp ${frame.timestampSec}s`}]`
+    });
+    parts.push({
+      inlineData: {
+        mimeType: frame.mimeType || 'image/jpeg',
+        data: frame.base64
       }
-    } catch (e) {
-      console.warn('Could not read video file for inline analysis:', e.message);
-    }
+    });
   }
 
+  // 3. Add prompt constraints and required JSON schema
   const previousCommentsContext = previousComments.length > 0
-    ? `\nTo avoid repetition, DO NOT generate any comments similar to these recently generated ones:\n- ${previousComments.slice(-10).join('\n- ')}`
+    ? `\nTo avoid repetition across your session, DO NOT generate comments that duplicate these recent comments:\n- ${previousComments.slice(-10).join('\n- ')}`
     : '';
 
-  const systemPrompt = `
-You are ReelAI, an intelligent Instagram Reels video analyst and comment assistant.
-Your task is to analyze an Instagram Reel and generate exactly 3 natural, human-sounding comment suggestions.
-
-${hasVisualVideo ? 'VIDEO ATTACHMENT: You have been provided the ACTUAL VIDEO FILE of this Reel.' : 'NOTE: No direct video file was uploaded. You are given the Reel URL and any known metadata/caption.'}
-
-Reel URL: ${reelUrl || 'N/A'}
-Caption/Title: ${title || 'N/A'}
+  const promptText = `
+VIDEO METADATA:
+- Reel URL: ${reelUrl || 'Attached video file'}
+- Provided Title/Context: ${title || 'N/A'}
+- Total Frames Analyzed: ${frames.length}
 ${previousCommentsContext}
 
-CRITICAL RULES FOR COMMENT GENERATION:
-1. SOUND LIKE A REAL HUMAN: Write comments that sound authentic, casual, and thoughtful.
-2. SHORT & NATURAL: 1-2 sentences maximum.
-3. VIDEO-SPECIFIC: Directly reference specific elements from the video (visual actions, subject, technique, humor, advice, scenery, or surprise).
-4. NO GENERIC PRAISE: NEVER generate lazy comments like "Nice video", "Great post", "Love this!", "Awesome", or "So cool!". Every comment must have specific substance.
-5. NO MISLEADING CLAIMS: Do not claim to see things not in the video. If visual video wasn't provided, ground comments respectfully on the topic and title.
-6. NO EXCESSIVE EMOJIS: Max 1 naturally placed emoji per comment, or none at all.
-7. NO HASHTAGS: Do not include hashtags.
-8. NO ABUSE OR SPAM: Never generate negative, abusive, promotional, or deceptive text.
-9. NO FAKE PERSONAL EXPERIENCES: Do not claim "I was there yesterday!" unless explicitly instructed.
-10. MATCH TONE & LANGUAGE: Detect the language and vibe (humorous, inspirational, educational, sarcastic, awe-inspiring, fitness motivation, etc.) and match it.
+INSTRUCTIONS FOR GENUINE VISUAL ANALYSIS:
+1. Ground your entire analysis STRICTLY on what is visible in the provided frame images.
+2. Identify what actually happens in the video, who or what the main subject is, and what observable actions take place across the sequence of frames.
+3. If the frames are blurry, ambiguous, or insufficient to understand the video, state this honestly in "videoSummary" instead of inventing details.
+4. DO NOT invent locations, people, equipment, activities, or events that are not visible in the frames.
 
-OUTPUT FORMAT:
-Return a JSON object with this exact structure:
+INSTRUCTIONS FOR 3 GROUNDED COMMENTS:
+1. Generate EXACTLY 3 natural, human-sounding comment suggestions.
+2. Each comment MUST directly reference specific visual elements, observable actions, or techniques visible in the video frames.
+3. Short and authentic: 1 to 2 sentences maximum. Sounds like a real human viewer on Instagram.
+4. NO GENERIC PRAISE: Never write generic filler like "Nice video", "Great post", "Love this!", "Awesome", or "So cool!".
+5. Natural tone: Maximum 1 emoji per comment, or none at all. No hashtags. No fake claims ("I was there yesterday!").
+
+OUTPUT FORMAT (Respond with a valid JSON object matching this exact schema):
 {
-  "reelType": "Comedy" | "Education" | "Technology" | "Travel" | "Fitness" | "Food" | "Fashion" | "Lifestyle" | "Art" | "Music" | "Other",
-  "summary": "1-2 sentence concise description of the visible content, actions, subject, and mood",
-  "mood": "e.g., Energetic, Peaceful, Informative, Hilarious, Motivational",
-  "language": "e.g., English, Spanish, Hindi, etc.",
+  "videoSummary": "Detailed 1-2 sentence description of what actually happens in the video based on the frames",
+  "mainSubject": "The main person, animal, object, or activity visible in the video",
+  "actions": "Specific observable actions and events across the frames",
+  "category": "Comedy" | "Education" | "Travel" | "Fitness" | "Food" | "Technology" | "Fashion" | "Lifestyle" | "Art" | "Music" | "Other",
+  "mood": "Apparent tone (e.g., Energetic, Serene, Informative, Humorous, Intense, Creative)",
+  "language": "Detected language if visible in on-screen text/signs, otherwise 'English'",
   "comments": [
     {
-      "text": "First comment text here",
-      "tone": "e.g., Engaging / Observant / Humorous / Supportive"
+      "text": "First grounded comment directly referencing specific visible actions or details",
+      "tone": "Observant"
     },
     {
-      "text": "Second comment text here",
-      "tone": "e.g., Insightful / Appreciative / Inquisitive"
+      "text": "Second grounded comment offering an engaging observation or thoughtful reaction",
+      "tone": "Insightful"
     },
     {
-      "text": "Third comment text here",
-      "tone": "e.g., Casual / Direct / Thoughtful"
+      "text": "Third grounded comment with an authentic, casual human perspective",
+      "tone": "Engaging"
     }
   ]
 }
 `;
 
-  parts.push({ text: systemPrompt });
+  parts.push({ text: promptText });
 
   try {
     const result = await model.generateContent(parts);
@@ -258,7 +261,7 @@ Return a JSON object with this exact structure:
     const responseText = response.text()?.trim();
 
     if (!responseText) {
-      throw new Error('Gemini returned an empty response.');
+      throw new Error('Gemini returned an empty response during visual frame analysis.');
     }
 
     // Clean JSON formatting if wrapped in markdown code blocks
@@ -269,17 +272,27 @@ Return a JSON object with this exact structure:
 
     const parsed = JSON.parse(cleanedJson);
 
-    // Validate expected structure
+    // Validate structured fields
     if (!parsed.comments || !Array.isArray(parsed.comments) || parsed.comments.length === 0) {
       throw new Error('Gemini response missing comments array.');
     }
 
+    const category = parsed.category || 'Lifestyle';
+    const videoSummary = parsed.videoSummary || parsed.summary || 'Visual content analyzed successfully.';
+    const mainSubject = parsed.mainSubject || 'Subject visible in video';
+    const actions = parsed.actions || 'Actions observed across frames';
+    const mood = parsed.mood || 'Natural';
+    const language = parsed.language || 'English';
+
     return {
-      reelType: parsed.reelType || 'Lifestyle',
-      summary: parsed.summary || 'Video content analyzed successfully.',
-      mood: parsed.mood || 'Natural',
-      language: parsed.language || 'English',
-      hasVisualVideo,
+      category,
+      videoSummary,
+      mainSubject,
+      actions,
+      mood,
+      language,
+      framesCount: frames.length,
+      hasVisualVideo: true,
       comments: parsed.comments.slice(0, 3).map((c, idx) => ({
         text: typeof c === 'string' ? c : c.text,
         tone: typeof c === 'object' && c.tone ? c.tone : `Option ${idx + 1}`

@@ -149,6 +149,15 @@ export const api = {
     return request(`/reels/${id}/retry`, { method: 'POST' });
   },
 
+  uploadReelVideo(id, file) {
+    const formData = new FormData();
+    formData.append('video', file);
+    return request(`/reels/${id}/video`, {
+      method: 'POST',
+      body: formData
+    });
+  },
+
   deleteReel(id) {
     return request(`/reels/${id}`, { method: 'DELETE' });
   },

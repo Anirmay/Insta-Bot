@@ -21,7 +21,6 @@ export function openInDefaultBrowser(url) {
     let command = '';
 
     if (platform === 'win32') {
-      // In Windows powershell/cmd: start "" "url"
       command = `start "" "${trimmedUrl.replace(/"/g, '\\"')}"`;
     } else if (platform === 'darwin') {
       command = `open "${trimmedUrl.replace(/"/g, '\\"')}"`;
@@ -59,6 +58,30 @@ export function extractReelId(url) {
 }
 
 /**
+ * Checks whether direct video content can be acquired through permitted methods.
+ * Instagram restricts unauthenticated video stream downloads with login walls and expiring CDN tokens.
+ */
+export async function checkInstagramDirectAccess(url) {
+  if (!validateReelUrl(url)) {
+    return {
+      isValidUrl: false,
+      directVideoAvailable: false,
+      message: 'Invalid Instagram Reel URL format.'
+    };
+  }
+
+  // Permitted Instagram direct access check:
+  // Instagram public web pages redirect anonymous automated scrapers to login screens (/accounts/login/).
+  // Thus, permitted direct video extraction requires user-uploaded video files.
+  return {
+    isValidUrl: true,
+    directVideoAvailable: false,
+    reason: 'Instagram requires user session cookies and protects video CDNs. Automated direct downloading without user login is unavailable.',
+    actionRequired: 'upload_video'
+  };
+}
+
+/**
  * Check or set Instagram login state in DB
  */
 export function getInstagramSessionStatus() {
@@ -87,6 +110,7 @@ export default {
   openInDefaultBrowser,
   validateReelUrl,
   extractReelId,
+  checkInstagramDirectAccess,
   getInstagramSessionStatus,
   updateInstagramSessionStatus
 };

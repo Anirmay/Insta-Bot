@@ -176,6 +176,12 @@ export default function App() {
     return res;
   };
 
+  const handleUploadReelVideo = async (id, file) => {
+    const res = await api.uploadReelVideo(id, file);
+    await fetchData();
+    return res;
+  };
+
   const handleDeleteReel = async (id) => {
     const res = await api.deleteReel(id);
     await fetchData();
@@ -295,6 +301,7 @@ export default function App() {
               onAddReel={handleAddReel}
               onBatchAddReels={handleBatchAddReels}
               onRetryReel={handleRetryReel}
+              onUploadReelVideo={handleUploadReelVideo}
               onDeleteReel={handleDeleteReel}
               onSeedSamples={handleSeedSamples}
               onOpenInstagram={handleOpenInstagram}

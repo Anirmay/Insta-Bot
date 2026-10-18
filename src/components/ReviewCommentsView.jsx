@@ -190,6 +190,11 @@ export default function ReviewCommentsView({
                           <FileVideo className="w-2.5 h-2.5" /> Video Verified
                         </span>
                       )}
+                      {reel.frames_count > 0 && (
+                        <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-purple-500/20 text-purple-300 border border-purple-500/30 flex items-center gap-1">
+                          <Sparkles className="w-2.5 h-2.5" /> {reel.frames_count} Frames Analyzed
+                        </span>
+                      )}
                     </div>
 
                     <h4 className="text-base font-bold text-white tracking-tight">
@@ -201,9 +206,24 @@ export default function ReviewCommentsView({
                     </div>
 
                     {reel.visual_summary && (
-                      <p className="text-xs text-slate-300 bg-slate-950/50 p-3 rounded-2xl border border-slate-800/80 mt-2 leading-relaxed">
-                        <span className="font-semibold text-purple-300">Visual Summary:</span> {reel.visual_summary}
-                      </p>
+                      <div className="text-xs text-slate-300 bg-slate-950/50 p-3 rounded-2xl border border-slate-800/80 mt-2 space-y-1.5 leading-relaxed">
+                        <div>
+                          <span className="font-semibold text-purple-300">Visual Summary: </span>
+                          <span className="text-slate-200">{reel.visual_summary}</span>
+                        </div>
+                        {reel.main_subject && (
+                          <div className="text-[11px] text-slate-400">
+                            <span className="font-semibold text-slate-300">Main Subject: </span>
+                            {reel.main_subject}
+                          </div>
+                        )}
+                        {reel.actions && (
+                          <div className="text-[11px] text-slate-400">
+                            <span className="font-semibold text-slate-300">Observable Actions: </span>
+                            {reel.actions}
+                          </div>
+                        )}
+                      </div>
                     )}
                   </div>
 
