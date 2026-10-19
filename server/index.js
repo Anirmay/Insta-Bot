@@ -73,6 +73,10 @@ const upload = multer({
 
 // ==================== DASHBOARD & ENGINE ====================
 
+app.get('/api/health', (req, res) => {
+  res.json({ ok: true, status: 'healthy', timestamp: new Date().toISOString() });
+});
+
 app.get('/api/status', (req, res) => {
   try {
     const snapshot = engine.getSnapshot();

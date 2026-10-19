@@ -96,7 +96,7 @@ export default function ReelProcessingView({
       setSingleTitle('');
       setSelectedFile(null);
     } catch (err) {
-      setFormError(err.message || 'Failed to add Reel. Please check backend connection.');
+      setFormError(err.message || 'Failed to add Reel.');
     } finally {
       setIsSubmitting(false);
     }
@@ -123,7 +123,7 @@ export default function ReelProcessingView({
       setFormSuccess(`Imported ${res.added} Reel URLs (${res.skipped} duplicates skipped). Please attach video files to each Reel to enable visual AI analysis.`);
       setBatchText('');
     } catch (err) {
-      setFormError(err.message || 'Failed to import batch URLs. Please check backend connection.');
+      setFormError(err.message || 'Failed to import batch URLs.');
     } finally {
       setIsSubmitting(false);
     }
@@ -138,7 +138,7 @@ export default function ReelProcessingView({
       await onUploadReelVideo(reelId, file);
       setFormSuccess('Video file uploaded! Reel is now pending genuine visual frame analysis.');
     } catch (err) {
-      setFormError(`Failed to upload video for Reel: ${err.message}`);
+      setFormError(`Failed to upload video: ${err.message}`);
     } finally {
       setUploadingReelId(null);
     }
@@ -151,7 +151,7 @@ export default function ReelProcessingView({
       const res = await onSeedSamples();
       setFormSuccess(`Loaded ${res?.count || 4} verified sample Reels with full visual frame records!`);
     } catch (err) {
-      setFormError(err.message || 'Failed to load sample Reels. Please check backend connection.');
+      setFormError(err.message || 'Failed to load sample Reels.');
     }
   };
 

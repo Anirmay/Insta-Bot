@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import api from './api.js';
 
 import Sidebar from './components/Sidebar.jsx';
@@ -43,27 +43,46 @@ export default function App() {
   const [selectedReelId, setSelectedReelId] = useState(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [backendError, setBackendError] = useState(null);
+  const consecutiveFailures = useRef(0);
 
-  // Fetch full state from backend
-  const fetchData = useCallback(async () => {
+  // Fetch full state from backend with dedicated health verification and graceful partial handling
+  const fetchData = useCallback(async (isManual = false) => {
     try {
-      const [statusRes, keysRes, modelsRes, reelsRes, logsRes] = await Promise.all([
-        api.getStatus(),
+      // 1. Primary backend status & health check
+      const statusRes = await api.getStatus();
+      if (statusRes && statusRes.status) {
+        setStatusData(statusRes);
+        consecutiveFailures.current = 0;
+        setBackendError(null);
+      }
+
+      // 2. Auxiliary data requests with Promise.allSettled so one secondary endpoint doesn't fail the whole app
+      const [keysResult, modelsResult, reelsResult, logsResult] = await Promise.allSettled([
         api.getKeys(),
         api.getModels(),
         api.getReels(),
         api.getLogs()
       ]);
 
-      setStatusData(statusRes || DEFAULT_STATUS);
-      setKeys(keysRes.keys || []);
-      setModels(modelsRes.models || []);
-      setReels(reelsRes.reels || []);
-      setLogs(logsRes.logs || []);
-      setBackendError(null);
+      if (keysResult.status === 'fulfilled' && keysResult.value?.keys) {
+        setKeys(keysResult.value.keys);
+      }
+      if (modelsResult.status === 'fulfilled' && modelsResult.value?.models) {
+        setModels(modelsResult.value.models);
+      }
+      if (reelsResult.status === 'fulfilled' && reelsResult.value?.reels) {
+        setReels(reelsResult.value.reels);
+      }
+      if (logsResult.status === 'fulfilled' && logsResult.value?.logs) {
+        setLogs(logsResult.value.logs);
+      }
     } catch (err) {
-      console.warn('Backend fetch check:', err.message);
-      setBackendError(err.message || 'Cannot connect to ReelAI backend on port 47829');
+      consecutiveFailures.current += 1;
+      console.warn(`[Backend Connection] Check failed (attempt ${consecutiveFailures.current}):`, err.message);
+      // Show connection error only after 2 consecutive failures or on explicit manual refresh
+      if (isManual || consecutiveFailures.current >= 2) {
+        setBackendError(err.message || 'Cannot connect to ReelAI backend on port 47829');
+      }
     }
   }, []);
 
@@ -82,7 +101,7 @@ export default function App() {
 
   const handleManualRefresh = async () => {
     setIsRefreshing(true);
-    await fetchData();
+    await fetchData(true);
     setTimeout(() => setIsRefreshing(false), 500);
   };
 
