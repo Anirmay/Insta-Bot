@@ -84,12 +84,25 @@ db.exec(`
   );
 `);
 
+// Ensure schema migrations for reels and settings tables
+try { db.exec('ALTER TABLE reels ADD COLUMN main_subject TEXT'); } catch(e) {}
+try { db.exec('ALTER TABLE reels ADD COLUMN actions TEXT'); } catch(e) {}
+try { db.exec('ALTER TABLE reels ADD COLUMN frames_count INTEGER DEFAULT 0'); } catch(e) {}
+try { db.exec('ALTER TABLE reels ADD COLUMN thumbnail_path TEXT'); } catch(e) {}
+try { db.exec('ALTER TABLE reels ADD COLUMN analysis_source TEXT DEFAULT "none"'); } catch(e) {}
+try { db.exec('ALTER TABLE reels ADD COLUMN retrieval_status TEXT DEFAULT "pending"'); } catch(e) {}
+try { db.exec('ALTER TABLE reels ADD COLUMN video_duration REAL'); } catch(e) {}
+
+try { db.exec('ALTER TABLE settings ADD COLUMN instagram_session_status TEXT DEFAULT "disconnected"'); } catch(e) {}
+try { db.exec('ALTER TABLE settings ADD COLUMN instagram_username TEXT'); } catch(e) {}
+try { db.exec('ALTER TABLE settings ADD COLUMN instagram_last_checked TEXT'); } catch(e) {}
+
 // Ensure default settings row
 const existingSettings = db.prepare('SELECT * FROM settings WHERE id = 1').get();
 if (!existingSettings) {
   db.prepare(`
-    INSERT INTO settings (id, target_reels, selected_model, instagram_logged_in, status, current_step, updated_at)
-    VALUES (1, 50, 'gemini-3.8-flash', 0, 'idle', 'Ready to start', ?)
+    INSERT INTO settings (id, target_reels, selected_model, instagram_logged_in, instagram_session_status, status, current_step, updated_at)
+    VALUES (1, 50, 'gemini-3.8-flash', 0, 'disconnected', 'idle', 'Ready to start', ?)
   `).run(new Date().toISOString());
 } else if (
   !existingSettings.selected_model ||

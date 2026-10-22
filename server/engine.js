@@ -12,6 +12,7 @@ import {
   NetworkConnectionError
 } from './gemini.js';
 import { extractVideoFrames } from './videoProcessor.js';
+import { retrieveReelVideo } from './reelRetriever.js';
 
 class ReelProcessingEngine {
   constructor() {
@@ -216,36 +217,85 @@ class ReelProcessingEngine {
       this.currentReelUrl = nextReel.url;
 
       try {
-        // Step 1: Check whether video content is present
-        const hasVideoFile = Boolean(nextReel.video_path && fs.existsSync(nextReel.video_path));
+        let videoPath = nextReel.video_path;
+        let hasVideoFile = Boolean(videoPath && fs.existsSync(videoPath));
 
+        // Step 1: Automatic Reel content retrieval if video file is not already on disk
         if (!hasVideoFile) {
-          // As required: Never claim to have analyzed a video if no video was received!
-          // Mark as 'needs_video' with honest explanation
-          const needsVideoMsg = 'Direct Instagram video stream access is restricted without authentication. Please upload the Reel video file (MP4, MOV, or WEBM) for real visual frame analysis.';
+          // Status: Checking Reel Access
+          this.currentStep = `Checking access for Reel: ${nextReel.url}...`;
+          this.updateDbStatus();
+          db.prepare(`UPDATE reels SET status = 'checking_access', retrieval_status = 'checking', error_message = NULL WHERE id = ?`).run(nextReel.id);
+
+          // Status: Retrieving Video
+          this.currentStep = `Retrieving accessible video content from Instagram...`;
+          this.updateDbStatus();
+          db.prepare(`UPDATE reels SET status = 'retrieving_video', retrieval_status = 'retrieving' WHERE id = ?`).run(nextReel.id);
+
+          const retrievalResult = await retrieveReelVideo({ reelId: nextReel.id, url: nextReel.url });
+
+          if (!retrievalResult.success) {
+            // Truthfully mark reason: auth_required, not_accessible, or error
+            const failStatus = retrievalResult.status || 'not_accessible';
+            db.prepare(`
+              UPDATE reels 
+              SET status = ?,
+                  retrieval_status = ?,
+                  error_message = ?,
+                  analysis_source = 'none'
+              WHERE id = ?
+            `).run(failStatus, retrievalResult.reason || 'failed', retrievalResult.message, nextReel.id);
+
+            logActivity('warning', `Reel retrieval stopped: ${retrievalResult.reason}`, {
+              url: nextReel.url,
+              status: failStatus,
+              message: retrievalResult.message
+            });
+
+            this.currentStep = `${retrievalResult.reason}: ${nextReel.url}`;
+            this.updateDbStatus();
+            await new Promise((r) => setTimeout(r, 1200));
+            continue;
+          }
+
+          // Status: Video Content Retrieved
+          videoPath = retrievalResult.videoPath;
+          hasVideoFile = true;
+
           db.prepare(`
             UPDATE reels 
-            SET status = 'needs_video',
-                error_message = ?,
-                analysis_source = 'none'
+            SET video_path = ?,
+                video_filename = ?,
+                video_mime = ?,
+                video_size = ?,
+                video_duration = ?,
+                status = 'video_retrieved',
+                retrieval_status = 'retrieved',
+                analysis_source = 'visual_frames',
+                error_message = NULL
             WHERE id = ?
-          `).run(needsVideoMsg, nextReel.id);
+          `).run(
+            retrievalResult.videoPath,
+            retrievalResult.videoFilename,
+            retrievalResult.videoMime,
+            retrievalResult.videoSize,
+            retrievalResult.videoDuration,
+            nextReel.id
+          );
 
-          logActivity('warning', `Reel requires video file upload for visual analysis: ${nextReel.url}`);
-          this.currentStep = `Video file required for Reel: ${nextReel.title || nextReel.url}`;
+          this.currentStep = `Video content retrieved (${retrievalResult.videoDuration}s, ${retrievalResult.dimensions})`;
           this.updateDbStatus();
-          await new Promise((r) => setTimeout(r, 800));
-          continue;
+          await new Promise((r) => setTimeout(r, 600));
         }
 
-        // Mark reel as analyzing in DB
-        db.prepare(`UPDATE reels SET status = 'analyzing', error_message = NULL WHERE id = ?`).run(nextReel.id);
+        if (this.isPaused || this.isStopped) break;
 
         // Step 2: Extract representative visual frames using FFmpeg
-        this.currentStep = `Extracting representative video frames with FFmpeg (${nextReel.video_filename || 'video'})...`;
+        this.currentStep = `Extracting representative video frames with FFmpeg (${nextReel.video_filename || path.basename(videoPath)})...`;
         this.updateDbStatus();
+        db.prepare(`UPDATE reels SET status = 'extracting_frames' WHERE id = ?`).run(nextReel.id);
 
-        const extractionResult = await extractVideoFrames(nextReel.video_path, {
+        const extractionResult = await extractVideoFrames(videoPath, {
           numFrames: 6,
           reelId: nextReel.id
         });
@@ -253,8 +303,9 @@ class ReelProcessingEngine {
         if (this.isPaused || this.isStopped) break;
 
         // Step 3: Analyze extracted visual frames with Gemini Multimodal AI
-        this.currentStep = `Sending ${extractionResult.framesCount} visual frames to Gemini AI (${settings.selected_model})...`;
+        this.currentStep = `Analyzing ${extractionResult.framesCount} visual frames with Gemini AI (${settings.selected_model})...`;
         this.updateDbStatus();
+        db.prepare(`UPDATE reels SET status = 'analyzing' WHERE id = ?`).run(nextReel.id);
 
         // Fetch recent comments to ensure uniqueness
         const recentCommentsRows = db.prepare(`
@@ -277,7 +328,7 @@ class ReelProcessingEngine {
 
         if (this.isPaused || this.isStopped) break;
 
-        // Step 4: Save analysis and comments to DB
+        // Step 4: Successfully Analyzed
         this.currentStep = 'Saving AI visual analysis and generating 3 grounded comments...';
         this.updateDbStatus();
 
@@ -285,6 +336,7 @@ class ReelProcessingEngine {
         db.prepare(`
           UPDATE reels 
           SET status = 'completed',
+              retrieval_status = 'analyzed',
               category = ?,
               visual_summary = ?,
               main_subject = ?,

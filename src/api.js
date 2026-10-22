@@ -249,10 +249,47 @@ export const api = {
     });
   },
 
-  updateInstagramSession(isLoggedIn) {
+  async connectInstagram() {
+    if (typeof window !== 'undefined' && window.electronAPI?.instagram?.login) {
+      try {
+        return await window.electronAPI.instagram.login();
+      } catch (e) {
+        console.warn('Native Electron login invocation failed, falling back to backend:', e);
+      }
+    }
+    return request('/instagram/connect', { method: 'POST' });
+  },
+
+  async logoutInstagram() {
+    if (typeof window !== 'undefined' && window.electronAPI?.instagram?.logout) {
+      try {
+        return await window.electronAPI.instagram.logout();
+      } catch (e) {
+        console.warn('Native Electron logout invocation failed, falling back to backend:', e);
+      }
+    }
+    return request('/instagram/logout', { method: 'POST' });
+  },
+
+  async checkInstagramSession() {
+    if (typeof window !== 'undefined' && window.electronAPI?.instagram?.checkSession) {
+      try {
+        const nativeSession = await window.electronAPI.instagram.checkSession();
+        if (nativeSession && nativeSession.status) {
+          return nativeSession;
+        }
+      } catch (e) {
+        console.warn('Native Electron session check failed, falling back to backend:', e);
+      }
+    }
+    return request('/instagram/session');
+  },
+
+  updateInstagramSession(payload) {
+    const body = typeof payload === 'boolean' ? { isLoggedIn: payload } : payload;
     return request('/instagram/session', {
       method: 'POST',
-      body: JSON.stringify({ isLoggedIn })
+      body: JSON.stringify(body)
     });
   },
 

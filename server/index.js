@@ -22,8 +22,11 @@ import {
   INSTAGRAM_URLS,
   openInDefaultBrowser,
   validateReelUrl,
+  normalizeReelUrl,
   getInstagramSessionStatus,
-  updateInstagramSessionStatus
+  updateInstagramSessionStatus,
+  launchElectronLogin,
+  logoutElectronSession
 } from './instagram.js';
 import engine from './engine.js';
 
@@ -77,10 +80,10 @@ app.get('/api/health', (req, res) => {
   res.json({ ok: true, status: 'healthy', timestamp: new Date().toISOString() });
 });
 
-app.get('/api/status', (req, res) => {
+app.get('/api/status', async (req, res) => {
   try {
     const snapshot = engine.getSnapshot();
-    const instagramSession = getInstagramSessionStatus();
+    const instagramSession = await getInstagramSessionStatus();
     res.json({
       ...snapshot,
       instagramSession
@@ -378,43 +381,41 @@ app.post('/api/reels', upload.single('video'), (req, res) => {
       return res.status(400).json({ error: 'Either a Reel URL or a video file is required.' });
     }
 
-    const reelUrl = (url || '').trim() || (file ? `https://www.instagram.com/reel/upload-${Date.now()}/` : '');
+    const rawUrl = (url || '').trim();
     
     // Validate Instagram URL format if provided
-    if (url && !validateReelUrl(reelUrl) && !file) {
+    if (rawUrl && !validateReelUrl(rawUrl) && !file) {
       return res.status(400).json({
         error: 'Please provide a valid Instagram Reel URL (e.g., https://www.instagram.com/reel/C3b4xyZ.../)'
       });
     }
 
+    const reelUrl = file ? (rawUrl || `https://www.instagram.com/reel/upload-${Date.now()}/`) : normalizeReelUrl(rawUrl);
     const reelId = crypto.randomUUID();
     const createdAt = new Date().toISOString();
     const db = getDb();
 
     // Check duplicate URL
-    if (url) {
+    if (rawUrl) {
       const existing = db.prepare('SELECT id, url FROM reels WHERE url = ?').get(reelUrl);
       if (existing) {
         return res.status(409).json({ error: 'This Reel URL is already in your processing list.' });
       }
     }
 
-    // Determine honest initial status:
-    // If video file is attached: status = 'pending', ready for visual frame analysis
-    // If URL only: status = 'needs_video', direct access restricted, video upload requested
+    // Direct Reel URL processing:
+    // status is 'pending' ("URL Added"), ready for automated retrieval by engine
     const hasVideo = Boolean(file);
-    const initialStatus = hasVideo ? 'pending' : 'needs_video';
-    const analysisSource = hasVideo ? 'visual_frames' : 'none';
-    const errorMessage = hasVideo
-      ? null
-      : 'Direct video access via Instagram URL is restricted without authentication. Please upload the Reel video file (MP4, MOV, or WEBM) for real visual frame analysis.';
+    const initialStatus = 'pending';
+    const retrievalStatus = hasVideo ? 'manual_file' : 'pending';
+    const analysisSource = hasVideo ? 'visual_frames' : 'pending';
 
     db.prepare(`
       INSERT INTO reels (
         id, url, title, video_path, video_filename, video_mime, video_size, 
-        status, analysis_source, error_message, created_at
+        status, retrieval_status, analysis_source, error_message, created_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
     `).run(
       reelId,
       reelUrl,
@@ -424,15 +425,15 @@ app.post('/api/reels', upload.single('video'), (req, res) => {
       file ? file.mimetype : null,
       file ? file.size : null,
       initialStatus,
+      retrievalStatus,
       analysisSource,
-      errorMessage,
       createdAt
     );
 
     logActivity(
-      hasVideo ? 'info' : 'warning',
-      hasVideo ? `Added Reel with video attachment: ${reelUrl}` : `Added Reel URL (requires video upload): ${reelUrl}`,
-      { hasVideo }
+      'info',
+      hasVideo ? `Queued Reel with uploaded video: ${reelUrl}` : `Queued Reel URL for automated retrieval: ${reelUrl}`,
+      { hasVideo, reelId }
     );
 
     res.json({
@@ -443,7 +444,7 @@ app.post('/api/reels', upload.single('video'), (req, res) => {
         title: title || (file ? file.originalname : 'Instagram Reel'),
         hasVideo,
         status: initialStatus,
-        error_message: errorMessage
+        retrieval_status: retrievalStatus
       }
     });
   } catch (err) {
@@ -510,12 +511,15 @@ app.post('/api/reels/batch', (req, res) => {
     let added = 0;
     let skipped = 0;
     const createdAt = new Date().toISOString();
-    const errorMessage = 'Direct video access via Instagram URL is restricted without authentication. Please upload the Reel video file (MP4, MOV, or WEBM) for real visual frame analysis.';
 
     for (const rawUrl of urls) {
-      const url = (rawUrl || '').trim();
-      if (!url) continue;
+      const trimmed = (rawUrl || '').trim();
+      if (!trimmed || !validateReelUrl(trimmed)) {
+        skipped++;
+        continue;
+      }
 
+      const url = normalizeReelUrl(trimmed);
       const existing = db.prepare('SELECT id FROM reels WHERE url = ?').get(url);
       if (existing) {
         skipped++;
@@ -524,13 +528,13 @@ app.post('/api/reels/batch', (req, res) => {
 
       const id = crypto.randomUUID();
       db.prepare(`
-        INSERT INTO reels (id, url, title, status, analysis_source, error_message, created_at)
-        VALUES (?, ?, ?, 'needs_video', 'none', ?, ?)
-      `).run(id, url, 'Instagram Reel', errorMessage, createdAt);
+        INSERT INTO reels (id, url, title, status, retrieval_status, analysis_source, error_message, created_at)
+        VALUES (?, ?, ?, 'pending', 'pending', 'pending', NULL, ?)
+      `).run(id, url, 'Instagram Reel', createdAt);
       added++;
     }
 
-    logActivity('info', `Batch imported ${added} Reel URLs (${skipped} duplicates skipped, video uploads requested)`);
+    logActivity('info', `Batch imported ${added} Reel URLs (${skipped} skipped or duplicates)`);
     res.json({ success: true, added, skipped });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -546,20 +550,14 @@ app.post('/api/reels/:id/retry', (req, res) => {
       return res.status(404).json({ error: 'Reel not found.' });
     }
 
-    const hasVideo = Boolean(existing.video_path && fs.existsSync(existing.video_path));
-    const nextStatus = hasVideo ? 'pending' : 'needs_video';
-    const nextError = hasVideo
-      ? null
-      : 'Direct video access via Instagram URL is restricted without authentication. Please upload the Reel video file (MP4, MOV, or WEBM) for real visual frame analysis.';
-
     db.prepare(`
       UPDATE reels 
-      SET status = ?, error_message = ? 
+      SET status = 'pending', retrieval_status = 'pending', error_message = NULL 
       WHERE id = ?
-    `).run(nextStatus, nextError, id);
+    `).run(id);
 
-    logActivity('info', `Retried Reel analysis`, { reelId: id, status: nextStatus });
-    res.json({ success: true, status: nextStatus });
+    logActivity('info', `Retried Reel in queue`, { reelId: id, url: existing.url });
+    res.json({ success: true, status: 'pending' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -642,6 +640,33 @@ app.post('/api/comments/:id/post', (req, res) => {
 
 // ==================== INSTAGRAM SESSION ACTIONS ====================
 
+app.get('/api/instagram/session', async (req, res) => {
+  try {
+    const status = await getInstagramSessionStatus();
+    res.json(status);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/instagram/connect', async (req, res) => {
+  try {
+    const result = await launchElectronLogin();
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/instagram/logout', async (req, res) => {
+  try {
+    const result = await logoutElectronSession();
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/instagram/open', async (req, res) => {
   try {
     const { target, url } = req.body;
@@ -662,8 +687,12 @@ app.post('/api/instagram/open', async (req, res) => {
 
 app.post('/api/instagram/session', (req, res) => {
   try {
-    const { isLoggedIn } = req.body;
-    const updated = updateInstagramSessionStatus(Boolean(isLoggedIn));
+    const { isLoggedIn, sessionStatus, username } = req.body;
+    const updated = updateInstagramSessionStatus({
+      isLoggedIn: Boolean(isLoggedIn),
+      sessionStatus,
+      username
+    });
     res.json(updated);
   } catch (err) {
     res.status(500).json({ error: err.message });

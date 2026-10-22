@@ -225,10 +225,40 @@ export default function App() {
     await api.openInstagram(target, url);
   };
 
-  const handleUpdateSession = async (isLoggedIn) => {
-    await api.updateInstagramSession(isLoggedIn);
+  const handleConnectInstagram = async () => {
+    const res = await api.connectInstagram();
+    await fetchData();
+    return res;
+  };
+
+  const handleLogoutInstagram = async () => {
+    const res = await api.logoutInstagram();
+    await fetchData();
+    return res;
+  };
+
+  const handleCheckSession = async () => {
+    const res = await api.checkInstagramSession();
+    await fetchData();
+    return res;
+  };
+
+  const handleUpdateSession = async (payload) => {
+    await api.updateInstagramSession(payload);
     await fetchData();
   };
+
+  // Listen for native Electron session updates
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.electronAPI?.instagram?.onSessionChanged) {
+      const unsub = window.electronAPI.instagram.onSessionChanged(() => {
+        fetchData();
+      });
+      return () => {
+        if (typeof unsub === 'function') unsub();
+      };
+    }
+  }, [fetchData]);
 
   // Utility Actions
   const handleClearLogs = async () => {
@@ -304,6 +334,9 @@ export default function App() {
             <InstagramSessionView
               statusData={statusData}
               onOpenInstagram={handleOpenInstagram}
+              onConnectInstagram={handleConnectInstagram}
+              onLogoutInstagram={handleLogoutInstagram}
+              onCheckSession={handleCheckSession}
               onUpdateSession={handleUpdateSession}
             />
           )}
